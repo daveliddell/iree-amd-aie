@@ -359,8 +359,9 @@ static iree_status_t iree_hal_xrt_direct_command_buffer_dispatch(
   hipError_t status = hipSuccess;
   // TODO(max): do we need multiple descriptor sets ever for AIE?
   uint32_t set = 0;
-  iree_hal_xrt_direct_command_buffer_push_descriptor_set(
-      base_command_buffer, set, bindings.count, bindings.values);
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(
+      z0, iree_hal_xrt_direct_command_buffer_push_descriptor_set(
+              base_command_buffer, set, bindings.count, bindings.values));
   for (iree_host_size_t j = 0; j < bindings.count; ++j) {
     xrt_buffer_t hostBuffer = command_buffer->descriptor_sets[set].bindings[j];
     if ((status = hipHostGetDevicePointer(&deviceBuffer, hostBuffer, 0)) !=
