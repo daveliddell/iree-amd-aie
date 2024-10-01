@@ -7,7 +7,7 @@
 #ifndef IREE_AMD_AIE_DRIVER_XRT_NATIVE_EXECUTABLE_H_
 #define IREE_AMD_AIE_DRIVER_XRT_NATIVE_EXECUTABLE_H_
 
-#include <stdint.h>
+#include <cstdint>
 
 // Set HIP to use AMD devices
 #define __HIP_PLATFORM_AMD__ 1
@@ -24,11 +24,11 @@ extern "C" {
 
 // Object and launch parameters for a compute kernel.
 typedef struct iree_hal_xrt_kernel_params_t {
-  xrt::xclbin* xclbin;
+  xrt::hw_context context;
   // The kernel code object.
-  xrt::kernel* kernel;
+  xrt::kernel kernel;
   // Instruction buffer argument to the kernel.
-  xrt::bo* instr;
+  xrt::bo instr;
   // Number of assembly instructions argument to the kernel
   uint32_t num_instr;  // number of instructions
 
@@ -42,7 +42,8 @@ typedef struct iree_hal_xrt_kernel_params_t {
 // |out_executable| must be released by the caller (see
 // iree_hal_executable_release).
 iree_status_t iree_hal_xrt_native_executable_create(
-    xrt::device* device, const iree_hal_executable_params_t* executable_params,
+    xrtDeviceHandle device_hdl,
+    const iree_hal_executable_params_t* executable_params,
     iree_allocator_t host_allocator, iree_hal_executable_t** out_executable);
 
 // Returns the kernel launch parameters for the given |entry_point|.

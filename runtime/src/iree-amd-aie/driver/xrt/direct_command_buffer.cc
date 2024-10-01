@@ -336,7 +336,6 @@ static iree_status_t iree_hal_xrt_direct_command_buffer_dispatch(
 
   // Index to push arguments on the kernel.
   iree_host_size_t arg_index = 0;
-
   // First argument is the opcode.
   argsVec.push_back(&opcode);
   ++arg_index;

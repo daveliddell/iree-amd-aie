@@ -198,6 +198,7 @@ static iree_status_t iree_hal_xrt_allocator_allocate_buffer(
   } else {
     if (buffer) iree_hal_buffer_release(buffer);
   }
+  IREE_TRACE_ZONE_END(z0);
   return status;
 }
 

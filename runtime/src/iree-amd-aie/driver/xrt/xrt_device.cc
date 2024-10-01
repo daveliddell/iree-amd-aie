@@ -6,6 +6,7 @@
 
 #include "iree-amd-aie/driver/xrt/xrt_device.h"
 
+#include "experimental/xrt_system.h"
 #include "iree-amd-aie/driver/xrt/direct_allocator.h"
 #include "iree-amd-aie/driver/xrt/direct_command_buffer.h"
 #include "iree-amd-aie/driver/xrt/nop_executable_cache.h"
@@ -52,14 +53,27 @@ void iree_hal_xrt_device_params_initialize(
 }
 
 static iree_status_t iree_hal_xrt_device_create_internal(
-    iree_string_view_t identifier, int hipDeviceId,
-    const iree_hal_xrt_device_params_t* params, iree_allocator_t host_allocator,
-    iree_hal_device_t** out_device) {
+    iree_string_view_t identifier, const iree_hal_xrt_device_params_t* params,
+    iree_allocator_t host_allocator, iree_hal_device_t** out_device) {
   iree_hal_xrt_device_t* device = nullptr;
 
   iree_host_size_t total_size = iree_sizeof_struct(*device) + identifier.size;
   IREE_RETURN_IF_ERROR(
       iree_allocator_malloc(host_allocator, total_size, (void**)&device));
+
+  try {
+    if (IREE_UNLIKELY(xrt::system::enumerate_devices() == 0)) {
+      return iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
+                              "No XRT devices found");
+    }
+  } catch (std::exception& e) {
+    return iree_make_status(IREE_STATUS_INTERNAL,
+                            "xrt::system::enumerate_devices failed: %s",
+                            e.what());
+  }
+
+  xrtDeviceHandle device_hdl = xrtDeviceOpen(0);
+  IREE_ASSERT(device_hdl, "failed to open xrt device");
 
   iree_status_t status =
       iree_hal_xrt_allocator_create((iree_hal_device_t*)device, hipDeviceId,
@@ -85,13 +99,12 @@ static iree_status_t iree_hal_xrt_device_create_internal(
 
 iree_status_t iree_hal_xrt_device_create(
     iree_string_view_t identifier, const iree_hal_xrt_device_params_t* params,
-    int hipDeviceId, iree_allocator_t host_allocator,
-    iree_hal_device_t** out_device) {
+    iree_allocator_t host_allocator, iree_hal_device_t** out_device) {
   IREE_ASSERT_ARGUMENT(out_device);
   IREE_TRACE_ZONE_BEGIN(z0);
 
   iree_status_t status = iree_hal_xrt_device_create_internal(
-      identifier, hipDeviceId, params, host_allocator, out_device);
+      identifier, params, host_allocator, out_device);
 
   IREE_TRACE_ZONE_END(z0);
   return status;
@@ -104,7 +117,9 @@ static void iree_hal_xrt_device_destroy(iree_hal_device_t* base_device) {
 
   iree_hal_allocator_release(device->device_allocator);
   iree_arena_block_pool_deinitialize(&device->block_pool);
+  xrtDeviceHandle device_hdl = device->device_hdl;
   iree_allocator_free(host_allocator, device);
+  (void)xrtDeviceClose(device_hdl);
 
   IREE_TRACE_ZONE_END(z0);
 }

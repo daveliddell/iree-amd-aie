@@ -242,8 +242,7 @@ static iree_status_t iree_hal_xrt_driver_create_device_by_id(
   iree_string_view_t device_name = iree_make_cstring_view("xrt");
 
   iree_status_t status = iree_hal_xrt_device_create(
-      device_name, &driver->device_params, driver->hipDeviceId, host_allocator,
-      out_device);
+      device_name, &driver->device_params, host_allocator, out_device);
 
   IREE_TRACE_ZONE_END(z0);
   return status;
@@ -259,8 +258,7 @@ static iree_status_t iree_hal_xrt_driver_create_device_by_path(
   iree_string_view_t device_name = iree_make_cstring_view("xrt");
 
   iree_status_t status = iree_hal_xrt_device_create(
-      device_name, &driver->device_params, driver->hipDeviceId, host_allocator,
-      out_device);
+      device_name, &driver->device_params, host_allocator, out_device);
 
   IREE_TRACE_ZONE_END(z0);
   return status;
