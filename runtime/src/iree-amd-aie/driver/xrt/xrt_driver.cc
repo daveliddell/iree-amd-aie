@@ -8,8 +8,13 @@
 #include "iree/base/api.h"
 #include "iree/base/status.h"
 #include "iree/base/target_platform.h"
+#include "iree/base/status.h"
+#include "iree/base/target_platform.h"
 #include "iree/base/tracing.h"
 #include "iree/hal/api.h"
+
+// Set HIP to use AMD devices
+#define __HIP_PLATFORM_AMD__ 1
 
 // Set HIP to use AMD devices
 #define __HIP_PLATFORM_AMD__ 1

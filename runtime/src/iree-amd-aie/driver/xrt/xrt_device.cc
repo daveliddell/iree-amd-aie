@@ -18,6 +18,13 @@
 #include "iree/hal/utils/file_transfer.h"
 #include "iree/hal/utils/memory_file.h"
 
+// Set HIP to use AMD devices
+#define __HIP_PLATFORM_AMD__ 1
+
+// XRT includes
+#include "hip/hip_runtime_api.h"
+// #include "hip/xrt_hip.h"
+
 typedef struct iree_hal_xrt_device_t {
   // Abstract resource used for injecting reference counting and vtable; must be
   // at offset 0.
@@ -53,28 +60,37 @@ void iree_hal_xrt_device_params_initialize(
 }
 
 static iree_status_t iree_hal_xrt_device_create_internal(
-    iree_string_view_t identifier, const iree_hal_xrt_device_params_t* params,
-    iree_allocator_t host_allocator, iree_hal_device_t** out_device) {
+    iree_string_view_t identifier,
+    const iree_hal_xrt_device_params_t* params, iree_allocator_t host_allocator,
+    iree_hal_device_t** out_device) {
   iree_hal_xrt_device_t* device = nullptr;
 
   iree_host_size_t total_size = iree_sizeof_struct(*device) + identifier.size;
   IREE_RETURN_IF_ERROR(
       iree_allocator_malloc(host_allocator, total_size, (void**)&device));
 
-  try {
-    if (IREE_UNLIKELY(xrt::system::enumerate_devices() == 0)) {
-      return iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
-                              "No XRT devices found");
-    }
-  } catch (std::exception& e) {
-    return iree_make_status(IREE_STATUS_INTERNAL,
-                            "xrt::system::enumerate_devices failed: %s",
-                            e.what());
+  // Get handle to xrt device
+  hipError_t status = hipSuccess;
+  if ((status = hipInit(0)) != hipSuccess) {
+    return iree_make_status(IREE_STATUS_INTERNAL, "hipInit(0) failed: %s",
+                            hipGetErrorString(status));
+  }
+  hipDevice_t hdevice;
+  int index = 0;
+  if ((status = hipDeviceGet(&hdevice, index)) != hipSuccess) {
+    return iree_make_status(IREE_STATUS_INTERNAL, "hipDeviceGet(0) failed: %s",
+                            hipGetErrorString(status));
   }
 
-  xrtDeviceHandle device_hdl = xrtDeviceOpen(0);
-  IREE_ASSERT(device_hdl, "failed to open xrt device");
+  (void)hdevice;  // Device stored internal to HIP API
+  // The XRT HIP API currently keeps track of a "default device", initially
+  // set with a call to hipDeviceGet.  Other API functions use this default
+  // device instead of taking a device ID/handle explicitly.  In theory,
+  // it is possible to set the current thread's default device with a call
+  // to hipSetDevice, but that function isn't implemented, so we're stuck with
+  // a single device for now.
 
+  // TODO(dliddell): FIX MERGE
   iree_status_t status =
       iree_hal_xrt_allocator_create((iree_hal_device_t*)device, hipDeviceId,
                                     host_allocator, &device->device_allocator);
@@ -99,7 +115,8 @@ static iree_status_t iree_hal_xrt_device_create_internal(
 
 iree_status_t iree_hal_xrt_device_create(
     iree_string_view_t identifier, const iree_hal_xrt_device_params_t* params,
-    iree_allocator_t host_allocator, iree_hal_device_t** out_device) {
+    iree_allocator_t host_allocator,
+    iree_hal_device_t** out_device) {
   IREE_ASSERT_ARGUMENT(out_device);
   IREE_TRACE_ZONE_BEGIN(z0);
 
