@@ -32,7 +32,7 @@ typedef struct iree_hal_xrt_device_t {
   iree_allocator_t host_allocator;
   iree_hal_allocator_t* device_allocator;
 
-  xrt::device* device;
+  int hipDeviceId;
 } iree_hal_xrt_device_t;
 
 namespace {
@@ -52,7 +52,7 @@ void iree_hal_xrt_device_params_initialize(
 }
 
 static iree_status_t iree_hal_xrt_device_create_internal(
-    iree_string_view_t identifier, xrt::device* xrt_device,
+    iree_string_view_t identifier, int hipDeviceId,
     const iree_hal_xrt_device_params_t* params, iree_allocator_t host_allocator,
     iree_hal_device_t** out_device) {
   iree_hal_xrt_device_t* device = nullptr;
@@ -62,7 +62,7 @@ static iree_status_t iree_hal_xrt_device_create_internal(
       iree_allocator_malloc(host_allocator, total_size, (void**)&device));
 
   iree_status_t status =
-      iree_hal_xrt_allocator_create((iree_hal_device_t*)device, xrt_device,
+      iree_hal_xrt_allocator_create((iree_hal_device_t*)device, hipDeviceId,
                                     host_allocator, &device->device_allocator);
   if (iree_status_is_ok(status)) {
     iree_hal_resource_initialize(&iree_hal_xrt_device_vtable,
@@ -74,7 +74,7 @@ static iree_status_t iree_hal_xrt_device_create_internal(
                                      &device->block_pool);
 
     device->host_allocator = host_allocator;
-    device->device = xrt_device;
+    device->hipDeviceId = hipDeviceId;
     device->params = *params;
     *out_device = (iree_hal_device_t*)device;
   } else {
@@ -85,13 +85,13 @@ static iree_status_t iree_hal_xrt_device_create_internal(
 
 iree_status_t iree_hal_xrt_device_create(
     iree_string_view_t identifier, const iree_hal_xrt_device_params_t* params,
-    xrt::device* device, iree_allocator_t host_allocator,
+    int hipDeviceId, iree_allocator_t host_allocator,
     iree_hal_device_t** out_device) {
   IREE_ASSERT_ARGUMENT(out_device);
   IREE_TRACE_ZONE_BEGIN(z0);
 
   iree_status_t status = iree_hal_xrt_device_create_internal(
-      identifier, device, params, host_allocator, out_device);
+      identifier, hipDeviceId, params, host_allocator, out_device);
 
   IREE_TRACE_ZONE_END(z0);
   return status;
@@ -201,7 +201,9 @@ static iree_status_t iree_hal_xrt_device_create_executable_cache(
     iree_loop_t loop, iree_hal_executable_cache_t** out_executable_cache) {
   iree_hal_xrt_device_t* device = iree_hal_xrt_device_cast(base_device);
   return iree_hal_xrt_nop_executable_cache_create(
-      device->device, identifier, device->host_allocator, out_executable_cache);
+      /* device->device*/ 0, identifier, device->host_allocator,
+      out_executable_cache);
+  // TODO (dliddell): fix reference to HIP device
 }
 
 static iree_status_t iree_hal_xrt_device_import_file(

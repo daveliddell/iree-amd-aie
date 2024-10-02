@@ -189,3 +189,34 @@ install(
   EXPORT IREEExported-Runtime
   COMPONENT IREETools-Runtime
   LIBRARY DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# ##############################################################################
+# xrt_hip
+# ##############################################################################
+
+message(STATUS "building XRT HIP")
+
+# send xrt_hip to trash so it doesn't get installed
+set(XRT_NAMELINK_ONLY EXCLUDE_FROM_ALL)
+set(XRT_INSTALL_LIB_DIR "$ENV{TMP}")
+set(XRT_INSTALL_BIN_DIR "$ENV{TMP}")
+set(XRT_NAMELINK_SKIP EXCLUDE_FROM_ALL)
+set(XRT_SOURCE_DIR ${IREE_XRT_SOURCE_DIR})
+# # remove unsupported -Wextra flag on windows
+# set(GSL_TEST OFF CACHE BOOL "")
+
+add_subdirectory(${IREE_XRT_SOURCE_DIR}/runtime_src/hip iree-aie-xrt-hip)
+
+# TODO(dliddell): This shouldn't be necessary but seems to be missing from
+# hip/api/CMakeLists.txt.  Need to follow up with XRT team.
+target_include_directories(hip_api_library_objects
+  PRIVATE
+  ${XRT_SOURCE_DIR}/runtime_src/core/include
+  )
+
+install(
+  TARGETS xrt_hip
+  EXPORT IREEExported-Runtime
+  COMPONENT IREETools-Runtime
+  LIBRARY DESTINATION ${CMAKE_INSTALL_BINDIR})
+

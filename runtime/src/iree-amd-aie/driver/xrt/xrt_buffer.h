@@ -15,10 +15,14 @@
 extern "C" {
 #endif  // __cplusplus
 
+// Type of an XRT buffer, which depends on the XRT API being used (currently
+// XRT HIP).  This type has pointer semantics.
+typedef void* xrt_buffer_t;
+
 // Wraps a XRT allocation in an iree_hal_buffer_t by retaining |xrt_buffer|.
 // |out_buffer| must be released by the caller (see iree_hal_buffer_release).
 iree_status_t iree_hal_xrt_buffer_wrap(
-    xrt::bo* xrt_buffer, iree_hal_allocator_t* allocator,
+    void* hipBuffer, iree_hal_allocator_t* allocator,
     iree_hal_memory_type_t memory_type, iree_hal_memory_access_t allowed_access,
     iree_hal_buffer_usage_t allowed_usage, iree_device_size_t allocation_size,
     iree_device_size_t byte_offset, iree_device_size_t byte_length,
@@ -26,10 +30,11 @@ iree_status_t iree_hal_xrt_buffer_wrap(
     iree_hal_buffer_t** out_buffer);
 
 // Returns the underlying XRT buffer handle for the given |buffer|.
-xrt::bo* iree_hal_xrt_buffer_handle(const iree_hal_buffer_t* buffer);
+// The HAL buffer retains ownership of the returned underlying XRT buffer.
+xrt_buffer_t iree_hal_xrt_buffer_handle(const iree_hal_buffer_t* buffer);
 
 #ifdef __cplusplus
-}       // extern "C"
+}  // extern "C"
 #endif  // __cplusplus
 
 #endif  // IREE_AMD_AIE_DRIVER_XRT_XRT_BUFFER_H_

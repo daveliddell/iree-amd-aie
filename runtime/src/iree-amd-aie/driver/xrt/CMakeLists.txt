@@ -11,6 +11,14 @@
 
 iree_add_all_subdirs()
 
+if(NOT DEFINED HIP_API_HEADERS_ROOT)
+  set(HIP_API_HEADERS_ROOT "${IREE_SOURCE_DIR}/third_party/hip-build-deps/include")
+endif()
+
+if(NOT EXISTS "${HIP_API_HEADERS_ROOT}/hip/hip_version.h")
+  message(SEND_ERROR "Could not find HIP headers at: ${HIP_API_HEADERS_ROOT}")
+endif()
+
 iree_register_external_hal_driver(
   NAME
     xrt
@@ -40,6 +48,8 @@ iree_cc_library(
     "nop_semaphore.cc"
     "nop_executable_cache.h"
     "nop_executable_cache.cc"
+  INCLUDES
+    "${HIP_API_HEADERS_ROOT}"
   DEPS
     iree::base
     iree::base::core_headers
@@ -54,6 +64,7 @@ iree_cc_library(
     # (effectively only available for link time symbol resolution)
     # note this requires CMake >= 3.26
     $<BUILD_LOCAL_INTERFACE:xrt_coreutil>
+    $<BUILD_LOCAL_INTERFACE:xrt_hip>
   COPTS
     $<$<PLATFORM_ID:Linux>:-fexceptions -frtti>
     $<$<PLATFORM_ID:Windows>:/EHsc /GR>

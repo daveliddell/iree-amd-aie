@@ -12,7 +12,7 @@
 
 typedef struct iree_hal_xrt_buffer_t {
   iree_hal_buffer_t base;
-  xrt::bo* buffer;
+  xrt_buffer_t buffer;
   iree_hal_buffer_release_callback_t release_callback;
 } iree_hal_xrt_buffer_t;
 
@@ -76,7 +76,7 @@ static void iree_hal_xrt_buffer_destroy(iree_hal_buffer_t* base_buffer) {
   IREE_TRACE_ZONE_END(z0);
 }
 
-xrt::bo* iree_hal_xrt_buffer_handle(const iree_hal_buffer_t* base_buffer) {
+xrt_buffer_t iree_hal_xrt_buffer_handle(const iree_hal_buffer_t* base_buffer) {
   const iree_hal_xrt_buffer_t* buffer =
       iree_hal_xrt_buffer_const_cast(base_buffer);
   return buffer->buffer;
@@ -85,26 +85,33 @@ xrt::bo* iree_hal_xrt_buffer_handle(const iree_hal_buffer_t* base_buffer) {
 static iree_status_t iree_hal_xrt_buffer_invalidate_range(
     iree_hal_buffer_t* base_buffer, iree_device_size_t local_byte_offset,
     iree_device_size_t local_byte_length) {
-  xrt::bo* xrt_buffer = iree_hal_xrt_buffer_handle(base_buffer);
+  xrt_buffer_t xrt_buffer = iree_hal_xrt_buffer_handle(base_buffer);
   if (IREE_UNLIKELY(!xrt_buffer)) {
     return iree_make_status(
         IREE_STATUS_FAILED_PRECONDITION,
         "buffer does not have device memory attached and cannot be mapped");
   }
-  xrt_buffer->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+
+  // "Mapped Memory" doesn't require a sync, but if we decide to change the
+  // memory type in the future, this would be the place to do hipMemcpy.
+  //
+  // xrt_buffer->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
   return iree_ok_status();
 }
 
 static iree_status_t iree_hal_xrt_buffer_flush_range(
     iree_hal_buffer_t* base_buffer, iree_device_size_t local_byte_offset,
     iree_device_size_t local_byte_length) {
-  xrt::bo* xrt_buffer = iree_hal_xrt_buffer_handle(base_buffer);
+  xrt_buffer_t xrt_buffer = iree_hal_xrt_buffer_handle(base_buffer);
   if (IREE_UNLIKELY(!xrt_buffer)) {
     return iree_make_status(
         IREE_STATUS_FAILED_PRECONDITION,
         "buffer does not have device memory attached and cannot be mapped");
   }
-  xrt_buffer->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  // "Mapped Memory" doesn't require a sync, but if we decide to change the
+  // memory type in the future, this would be the place to do hipMemcpy.
+  //
+  // xrt_buffer->sync(XCL_BO_SYNC_BO_TO_DEVICE);
   return iree_ok_status();
 }
 
@@ -122,7 +129,7 @@ static iree_status_t iree_hal_xrt_buffer_map_range(
       iree_hal_buffer_validate_usage(iree_hal_buffer_allowed_usage(base_buffer),
                                      IREE_HAL_BUFFER_USAGE_MAPPING_SCOPED));
 
-  void* host_ptr = buffer->buffer->map();
+  void* host_ptr = buffer->buffer;   // XRT HIP handle is same as host pointer
   IREE_ASSERT(host_ptr != nullptr);  // Should be guaranteed by previous checks.
   uint8_t* data_ptr = (uint8_t*)host_ptr + local_byte_offset;
   iree_status_t status = iree_hal_xrt_buffer_invalidate_range(

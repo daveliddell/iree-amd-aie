@@ -9,6 +9,9 @@
 
 #include <stdint.h>
 
+// Set HIP to use AMD devices
+#define __HIP_PLATFORM_AMD__ 1
+#include "hip/hip_runtime_api.h"
 #include "iree/base/api.h"
 #include "iree/base/tracing.h"
 #include "iree/hal/api.h"
@@ -28,6 +31,9 @@ typedef struct iree_hal_xrt_kernel_params_t {
   xrt::bo* instr;
   // Number of assembly instructions argument to the kernel
   uint32_t num_instr;  // number of instructions
+
+  // The function to run, as found in the ELF
+  hipFunction_t function;
   IREE_TRACE(iree_string_view_t kernel_name;)
   IREE_TRACE(iree_string_view_t source_filename;)
   IREE_TRACE(uint32_t source_line;)
@@ -45,7 +51,7 @@ iree_status_t iree_hal_xrt_native_executable_entry_point_kernel_params(
     iree_hal_xrt_kernel_params_t* out_params);
 
 #ifdef __cplusplus
-}       // extern "C"
+}  // extern "C"
 #endif  // __cplusplus
 
 #endif  // IREE_AMD_AIE_DRIVER_XRT_NATIVE_EXECUTABLE_H_

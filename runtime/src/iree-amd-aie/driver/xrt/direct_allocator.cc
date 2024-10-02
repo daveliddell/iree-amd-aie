@@ -6,6 +6,10 @@
 
 #include "iree-amd-aie/driver/xrt/direct_allocator.h"
 
+// Set HIP to use AMD devices
+#define __HIP_PLATFORM_AMD__ 1
+
+#include "hip/hip_runtime_api.h"
 #include "iree-amd-aie/driver/xrt/xrt_buffer.h"
 #include "iree/base/api.h"
 #include "iree/base/target_platform.h"
@@ -28,7 +32,7 @@ typedef struct iree_hal_xrt_allocator_t {
   // The device that this allocator is attached to.
   iree_hal_device_t* base_device;
 
-  xrt::device* device;
+  int hipDeviceId;
 
   iree_allocator_t host_allocator;
 
@@ -46,7 +50,7 @@ static iree_hal_xrt_allocator_t* iree_hal_xrt_allocator_cast(
 }
 
 iree_status_t iree_hal_xrt_allocator_create(
-    iree_hal_device_t* base_device, xrt::device* device,
+    iree_hal_device_t* base_device, int hipDeviceId,
     iree_allocator_t host_allocator, iree_hal_allocator_t** out_allocator) {
   IREE_ASSERT_ARGUMENT(base_device);
   IREE_ASSERT_ARGUMENT(out_allocator);
@@ -61,7 +65,7 @@ iree_status_t iree_hal_xrt_allocator_create(
                                &allocator->resource);
   allocator->base_device = base_device;
   iree_hal_device_retain(base_device);
-  allocator->device = device;
+  allocator->hipDeviceId = hipDeviceId;
   allocator->host_allocator = host_allocator;
 
   *out_allocator = (iree_hal_allocator_t*)allocator;
@@ -162,33 +166,24 @@ static iree_status_t iree_hal_xrt_allocator_allocate_buffer(
 
   iree_status_t status = iree_ok_status();
 
-  // Note that for NPU host and device share the same DDR RAM address space. So
-  // the `HOST_ONLY` flag below is not strictly correct but present for legacy
-  // reasons and it is what is used by XRT to identify that we want to allocate
-  // in the DDR RAM. Also, group_id is not of relavence in this use case so we
-  // set it to 0.
-  int group_id = 0;
-  std::unique_ptr<xrt::bo> xrt_buffer;
-
-  try {
-    xrt_buffer = std::make_unique<xrt::bo>(*allocator->device, allocation_size,
-                                           XRT_BO_FLAGS_HOST_ONLY, group_id);
-  } catch (...) {
+  // Allocate a "Mapped Memory" buffer, which is "pinned" (non-paged pool)
+  // memory on the host side and mapped into the device memory space also
+  xrt_buffer_t hipBuffer = NULL;
+  hipError_t hipStatus = hipSuccess;
+  if ((hipStatus = hipHostMalloc((void**)&hipBuffer, allocation_size,
+                                 hipHostMallocMapped)) != hipSuccess) {
     IREE_TRACE_ZONE_END(z0);
     return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
-                            "could not allocate memory for buffer");
-  }
-  IREE_TRACE_ZONE_END(z0);
-  if (!xrt_buffer) {
-    status = iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
-                              "unable to allocate buffer");
+                            "unable to allocate buffer: %s",
+                            hipGetErrorString(hipStatus));
   }
 
+  // Wrap the raw XRT buffer handle in an IREE HAL buffer
   iree_hal_buffer_t* buffer = nullptr;
   if (iree_status_is_ok(status)) {
     status = iree_hal_xrt_buffer_wrap(
-        xrt_buffer.release(), base_allocator, compat_params.type,
-        compat_params.access, compat_params.usage, allocation_size,
+        hipBuffer, base_allocator, compat_params.type, compat_params.access,
+        compat_params.usage, allocation_size,
         /*byte_offset=*/0, /*byte_length=*/allocation_size,
         iree_hal_buffer_release_callback_null(), &buffer);
   }
@@ -212,12 +207,14 @@ static void iree_hal_xrt_allocator_deallocate_buffer(
   iree_hal_xrt_allocator_t* allocator =
       iree_hal_xrt_allocator_cast(base_allocator);
 
-  try {
-    delete iree_hal_xrt_buffer_handle(base_buffer);
-  } catch (...) {
-    (void)iree_status_from_code(IREE_STATUS_DATA_LOSS);
+  hipError_t status = hipSuccess;
+  if ((status = hipHostFree(iree_hal_xrt_buffer_handle(base_buffer))) !=
+      hipSuccess) {
+    // Deallocate API doesn't have return code, but we would report the
+    // inability to free the XRT buffer here if it did.
     return;
   }
+
   IREE_TRACE_FREE_NAMED(IREE_HAL_XRT_ALLOCATOR_ID,
                         (void*)iree_hal_xrt_buffer_handle(base_buffer));
   IREE_STATISTICS(iree_hal_allocator_statistics_record_free(

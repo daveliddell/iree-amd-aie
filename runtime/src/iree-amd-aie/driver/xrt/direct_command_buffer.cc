@@ -6,6 +6,11 @@
 
 #include "iree-amd-aie/driver/xrt/direct_command_buffer.h"
 
+#include <cstdint>
+
+// Set HIP to use AMD devices
+#define __HIP_PLATFORM_AMD__ 1
+#include "hip/hip_runtime_api.h"
 #include "iree-amd-aie/driver/xrt/native_executable.h"
 #include "iree-amd-aie/driver/xrt/xrt_buffer.h"
 #include "iree/hal/utils/resource_set.h"
@@ -31,7 +36,7 @@ typedef struct iree_hal_xrt_direct_command_buffer_t {
   iree_arena_allocator_t arena;
 
   struct {
-    xrt::bo* bindings[IREE_HAL_XRT_MAX_DESCRIPTOR_SET_BINDING_COUNT];
+    xrt_buffer_t bindings[IREE_HAL_XRT_MAX_DESCRIPTOR_SET_BINDING_COUNT];
     // Offset and length are used to get the sub buffer at kernel launch.
     iree_device_size_t offsets[IREE_HAL_XRT_MAX_DESCRIPTOR_SET_BINDING_COUNT];
     iree_device_size_t lengths[IREE_HAL_XRT_MAX_DESCRIPTOR_SET_BINDING_COUNT];
@@ -216,9 +221,10 @@ static iree_status_t iree_hal_xrt_direct_command_buffer_update_buffer(
 
   // No need to Allocate scratch space (in an arena) as the memcpy
   // used below is expected to be synchronized.
-  xrt::bo* target_device_buffer = iree_hal_xrt_buffer_handle(
+  // XRT HIP buffer handle is the same as the host memory pointer.
+  void* target_device_buffer_ptr = iree_hal_xrt_buffer_handle(
       iree_hal_buffer_allocated_buffer(target_ref.buffer));
-  void* target_device_buffer_ptr = target_device_buffer->map();
+
   uint8_t* dst = (uint8_t*)target_device_buffer_ptr +
                  iree_hal_buffer_byte_offset(target_ref.buffer) +
                  target_ref.offset;
@@ -233,15 +239,14 @@ static iree_status_t iree_hal_xrt_direct_command_buffer_copy_buffer(
     iree_hal_buffer_ref_t source_ref, iree_hal_buffer_ref_t target_ref) {
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  xrt::bo* target_device_buffer = iree_hal_xrt_buffer_handle(
+  // XRT HIP buffer handle is the same as the host memory pointer.
+  void* target_device_buffer_ptr = iree_hal_xrt_buffer_handle(
       iree_hal_buffer_allocated_buffer(target_ref.buffer));
-  void* target_device_buffer_ptr = target_device_buffer->map();
   iree_device_size_t target_offset =
       iree_hal_buffer_byte_offset(target_ref.buffer) + target_ref.offset;
 
-  xrt::bo* source_device_buffer = iree_hal_xrt_buffer_handle(
+  void* source_device_buffer_ptr = iree_hal_xrt_buffer_handle(
       iree_hal_buffer_allocated_buffer(source_ref.buffer));
-  void* source_device_buffer_ptr = source_device_buffer->map();
   iree_device_size_t source_offset =
       iree_hal_buffer_byte_offset(source_ref.buffer) + source_ref.offset;
 
@@ -276,7 +281,8 @@ static iree_status_t iree_hal_xrt_direct_command_buffer_push_descriptor_set(
       iree_hal_xrt_direct_command_buffer_cast(base_command_buffer);
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  xrt::bo** current_bindings = command_buffer->descriptor_sets[set].bindings;
+  xrt_buffer_t* current_bindings =
+      command_buffer->descriptor_sets[set].bindings;
   iree_device_size_t* current_offsets =
       command_buffer->descriptor_sets[set].offsets;
   iree_device_size_t* current_lengths =
@@ -292,7 +298,6 @@ static iree_status_t iree_hal_xrt_direct_command_buffer_push_descriptor_set(
     IREE_RETURN_AND_END_ZONE_IF_ERROR(
         z0, iree_hal_resource_set_insert(command_buffer->resource_set, 1,
                                          &binding->buffer));
-    std::unique_ptr<xrt::bo> sub_buffer;
     current_bindings[i] = iree_hal_xrt_buffer_handle(
         iree_hal_buffer_allocated_buffer(binding->buffer));
     current_offsets[i] =
@@ -323,52 +328,110 @@ static iree_status_t iree_hal_xrt_direct_command_buffer_dispatch(
       z0, iree_hal_resource_set_insert(command_buffer->resource_set, 1,
                                        &executable));
 
-  xrt::kernel kernel = *kernel_params.kernel;
-  xrt::bo instr = *kernel_params.instr;
-  uint32_t num_instr = kernel_params.num_instr;
-  xrt::run run = xrt::run(kernel);
+  hipFunction_t function = kernel_params.function;
+  std::vector<void*> argsVec;
 
   // set opcode for transaction binary execution
-  unsigned int opcode = 3;
+  uint64_t opcode = 1;  // from XRT HIP demo.  Was 3;
 
   // Index to push arguments on the kernel.
   iree_host_size_t arg_index = 0;
 
   // First argument is the opcode.
-  run.set_arg(arg_index++, opcode);
+  argsVec.push_back(&opcode);
+  ++arg_index;
 
-  // Second argument is the LX6 instructions.
-  run.set_arg(arg_index++, instr);
+  // TODO(dliddell): Figure out if these kernel args are needed with XRT HIP
+  // xrt::bo instr = *kernel_params.instr;
+  // uint32_t num_instr = kernel_params.num_instr;
 
-  // Third argument is the number of LX6 instructions.
-  run.set_arg(arg_index++, num_instr);
+  // // Second argument is the LX6 instructions.
+  // run.set_arg(arg_index++, instr);
+
+  // // Third argument is the number of LX6 instructions.
+  // run.set_arg(arg_index++, num_instr);
+  // ++arg_index;
 
   // Copy descriptors from all sets to the end of the current segment for later
   // access.
   // TODO(jornt): hack to ensure that the output buffer is synced by syncing all
   // buffers after the run.
-  xrt::bo arg_buffer;
-  std::vector<xrt::bo> bos;
+  xrt_buffer_t deviceBuffer;
+  hipError_t status = hipSuccess;
   // TODO(max): do we need multiple descriptor sets ever for AIE?
   uint32_t set = 0;
   iree_hal_xrt_direct_command_buffer_push_descriptor_set(
       base_command_buffer, set, bindings.count, bindings.values);
   for (iree_host_size_t j = 0; j < bindings.count; ++j) {
-    arg_buffer = xrt::bo(*command_buffer->descriptor_sets[set].bindings[j],
-                         command_buffer->descriptor_sets[set].lengths[j],
-                         command_buffer->descriptor_sets[set].offsets[j]);
-    bos.push_back(arg_buffer);
-    run.set_arg(arg_index + j, arg_buffer);
+    xrt_buffer_t hostBuffer = command_buffer->descriptor_sets[set].bindings[j];
+    if ((status = hipHostGetDevicePointer(&deviceBuffer, hostBuffer, 0)) !=
+        hipSuccess) {
+      IREE_TRACE_ZONE_END(z0);
+      return iree_make_status(IREE_STATUS_UNKNOWN,
+                              "failed to get device buffer: %s",
+                              hipGetErrorString(status));
+    }
+    // Note: XRT HIP buffers don't support sub-buffers, so ignoring sub-buffer
+    // range:
+    //  command_buffer->descriptor_sets[set].lengths[j],
+    //  command_buffer->descriptor_sets[set].offsets[j]);
+
+    argsVec.push_back(deviceBuffer);
   }
-  run.start();
-  try {
-    run.wait2();
-  } catch (...) {
+
+  // Create HIP stream for holding kernel run command
+  hipStream_t stream;
+  if ((status = hipStreamCreateWithFlags(&stream, hipStreamNonBlocking)) !=
+      hipSuccess) {
+    IREE_TRACE_ZONE_END(z0);
+    return iree_make_status(IREE_STATUS_UNKNOWN, "failed to create stream: %s",
+                            hipGetErrorString(status));
+  }
+
+  // Run the kernel. Internal to this call input buffers are synced to the
+  // device.
+  if ((status = hipModuleLaunchKernel(function, 1, 1, 1, 1, 1, 1, 0, stream,
+                                      argsVec.data(), NULL)) != hipSuccess) {
+    (void)hipStreamDestroy(stream);
+    IREE_TRACE_ZONE_END(z0);
+    return iree_make_status(IREE_STATUS_UNKNOWN, "failed to launch kernel: %s",
+                            hipGetErrorString(status));
+  }
+
+  // Wait for the kernel to finish running
+  if ((status = hipStreamSynchronize(stream)) != hipSuccess) {
+    (void)hipStreamDestroy(stream);
     IREE_TRACE_ZONE_END(z0);
     return iree_make_status(IREE_STATUS_UNKNOWN,
-                            "failed to wait for xrt kernel run to finish");
+                            "failed to synchronize stream: %s",
+                            hipGetErrorString(status));
   }
-  for (xrt::bo& bo : bos) bo.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+  (void)hipStreamDestroy(stream);
+
+  // Copy output buffer(s) from device to host
+  // TODO(dliddell): This shouldn't be needed for Mapped Memory buffers, so
+  // find out and disable this code if not needed.
+  for (iree_host_size_t j = 0; j < bindings.count; ++j) {
+    xrt_buffer_t hostBuffer = command_buffer->descriptor_sets[set].bindings[j];
+    if ((status = hipHostGetDevicePointer(&deviceBuffer, hostBuffer, 0)) !=
+        hipSuccess) {
+      IREE_TRACE_ZONE_END(z0);
+      return iree_make_status(IREE_STATUS_UNKNOWN,
+                              "failed to get device buffer: %s",
+                              hipGetErrorString(status));
+    }
+    auto offset = command_buffer->descriptor_sets[set].offsets[j];
+    auto length = command_buffer->descriptor_sets[set].lengths[j];
+    if ((status = hipMemcpy((uint8_t*)hostBuffer + offset,
+                            (uint8_t*)deviceBuffer + offset, length,
+                            hipMemcpyDeviceToHost)) != hipSuccess) {
+      IREE_TRACE_ZONE_END(z0);
+      return iree_make_status(
+          IREE_STATUS_UNKNOWN,
+          "failed to copy ofm buffers from device to host: %s",
+          hipGetErrorString(status));
+    }
+  }
 
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();

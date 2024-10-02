@@ -6,15 +6,17 @@
 
 #include "iree-amd-aie/driver/xrt/xrt_device.h"
 #include "iree/base/api.h"
+#include "iree/base/status.h"
 #include "iree/base/target_platform.h"
 #include "iree/base/tracing.h"
 #include "iree/hal/api.h"
 
+// Set HIP to use AMD devices
+#define __HIP_PLATFORM_AMD__ 1
+
 // XRT includes
-#include "experimental/xrt_system.h"
-#include "xrt.h"
-#include "xrt/xrt_device.h"
-#include "xrt/xrt_kernel.h"
+#include "hip/hip_runtime_api.h"
+// #include "hip/xrt_hip.h"
 
 // Maximum device path length we support. The path is always a 16 character hex
 // string.
@@ -40,7 +42,8 @@ typedef struct iree_hal_xrt_driver_t {
   // Parameters used to control device behavior.
   iree_hal_xrt_device_params_t device_params;
 
-  xrt::device* device;
+  // Device ID, as used in the HIP API
+  int hipDeviceId;
 
 } iree_hal_xrt_driver_t;
 
@@ -79,24 +82,27 @@ iree_status_t iree_hal_xrt_driver_create_internal(
       (char*)driver + iree_sizeof_struct(*driver));
   driver->device_params = *device_params;
 
-  try {
-    if (IREE_UNLIKELY(xrt::system::enumerate_devices() == 0)) {
-      return iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
-                              "No XRT devices found");
-    }
-  } catch (std::exception& e) {
-    return iree_make_status(IREE_STATUS_INTERNAL,
-                            "xrt::system::enumerate_devices failed: %s",
-                            e.what());
-  }
   // Get handle to xrt device
-  try {
-    global_device = xrt::device(0);
-    driver->device = &global_device;
-  } catch (std::exception& e) {
-    return iree_make_status(IREE_STATUS_INTERNAL, "xrt::device(0) failed: %s",
-                            e.what());
+  hipError_t status = hipSuccess;
+  if ((status = hipInit(0)) != hipSuccess) {
+    return iree_make_status(IREE_STATUS_INTERNAL, "hipInit(0) failed: %s",
+                            hipGetErrorString(status));
   }
+  hipDevice_t hdevice;
+  int index = 0;
+  if ((status = hipDeviceGet(&hdevice, index)) != hipSuccess) {
+    return iree_make_status(IREE_STATUS_INTERNAL, "hipDeviceGet(0) failed: %s",
+                            hipGetErrorString(status));
+  }
+  driver->hipDeviceId = index;
+  (void)hdevice;  // Device stored internal to HIP API
+  // The XRT HIP API currently keeps track of a "default device", initially
+  // set with a call to hipDeviceGet.  Other API functions use this default
+  // device instead of taking a device ID/handle explicitly.  In theory,
+  // it is possible to set the current thread's default device with a call
+  // to hipSetDevice, but that function isn't implemented, so we're stuck with
+  // a single device for now.
+
   *out_driver = reinterpret_cast<iree_hal_driver_t*>(driver);
   return iree_ok_status();
 }
@@ -130,13 +136,13 @@ static void iree_hal_xrt_driver_destroy(iree_hal_driver_t* base_driver) {
 static iree_status_t iree_hal_xrt_driver_dump_device_info(
     iree_hal_driver_t* base_driver, iree_hal_device_id_t device_id,
     iree_string_builder_t* builder) {
-  iree_hal_xrt_driver_t* driver = iree_hal_xrt_driver_cast(base_driver);
-  xrt::device* device = driver->device;
+  // iree_hal_xrt_driver_t* driver = iree_hal_xrt_driver_cast(base_driver);
+  // int hipDeviceId = driver->hipDeviceId;
   IREE_RETURN_IF_ERROR(
       iree_string_builder_append_cstring(builder, "\n- Platform:"));
 
-  std::string platform_info = device->get_info<xrt::info::device::platform>();
-  const char* platform_info_str = platform_info.c_str();
+  // TODO (dliddell): implement real info when HIP API becomes available
+  const char* platform_info_str = "NPU Platform";
   if (platform_info_str) {
     IREE_RETURN_IF_ERROR(iree_string_builder_append_cstring(builder, " "));
     IREE_RETURN_IF_ERROR(
@@ -150,7 +156,7 @@ static iree_status_t iree_hal_xrt_driver_dump_device_info(
 // |out_device_info| must point to valid memory and additional data will be
 // appended to |buffer_ptr| and the new pointer is returned.
 static iree_status_t iree_hal_xrt_populate_device_info(
-    xrt::device* device, uint8_t* buffer_ptr, uint8_t** out_buffer_ptr,
+    int deviceId, uint8_t* buffer_ptr, uint8_t** out_buffer_ptr,
     iree_hal_device_info_t* out_device_info) {
   *out_buffer_ptr = buffer_ptr;
 
@@ -166,16 +172,33 @@ static iree_status_t iree_hal_xrt_populate_device_info(
   buffer_ptr += iree_string_view_append_to_buffer(
       iree_make_string_view(device_path.c_str(), path_len),
       &out_device_info->path, (char*)buffer_ptr);*/
-  std::string device_name = device->get_info<xrt::info::device::name>();
-  const size_t name_len = strlen(device_name.c_str());
-  if (name_len >= IREE_HAL_XRT_MAX_DEVICE_NAME_LENGTH) {
-    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
-                            "device name out of range");
-  }
-  buffer_ptr += iree_string_view_append_to_buffer(
-      iree_make_string_view(device_name.c_str(), name_len),
-      &out_device_info->name, (char*)buffer_ptr);
 
+  // TODO (dliddell): Enable this code when XRT HIP APIs are implemented
+  // // Get the properties for the specified device
+  // hipError_t status = hipSuccess;
+  // hipDeviceProp_t hipDeviceProp;
+  // memset(&hipDeviceProp, 0, sizeof(hipDeviceProp));
+  // if ((status = hipGetDeviceProperties(&hipDeviceProp, deviceId)) !=
+  //     hipSuccess) {
+  //   return iree_make_status(IREE_STATUS_UNKNOWN, "Unknown NPU API error: %s",
+  //                           hipGetErrorString(status));
+  // }
+
+  // // Copy the device name from the device properties to the output info
+  // struct const size_t name_len = strlen(hipDeviceProp.name); if (name_len >=
+  // IREE_HAL_XRT_MAX_DEVICE_NAME_LENGTH) {
+  //   return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+  //                           "device name out of range");
+  // }
+  // buffer_ptr += iree_string_view_append_to_buffer(
+  //     iree_make_string_view(hipDeviceProp.name, name_len),
+  //     &out_device_info->name, (char*)buffer_ptr);
+
+  const char* tempName = "NPU Device";
+  int name_len = strlen(tempName);
+  buffer_ptr += iree_string_view_append_to_buffer(
+      iree_make_string_view(tempName, name_len), &out_device_info->name,
+      (char*)buffer_ptr);
   *out_buffer_ptr = buffer_ptr;
 
   return iree_ok_status();
@@ -186,7 +209,7 @@ static iree_status_t iree_hal_xrt_driver_query_available_devices(
     iree_host_size_t* out_device_info_count,
     iree_hal_device_info_t** out_device_infos) {
   iree_hal_xrt_driver_t* driver = iree_hal_xrt_driver_cast(base_driver);
-  xrt::device* device = driver->device;
+  int hipDeviceId = driver->hipDeviceId;
   // Allocate the return infos and populate with the devices.
   iree_hal_device_info_t* device_infos = nullptr;
   iree_host_size_t single_info_size =
@@ -199,7 +222,7 @@ static iree_status_t iree_hal_xrt_driver_query_available_devices(
   // Append all path and name strings at the end of the struct.
   uint8_t* buffer_ptr = (uint8_t*)device_infos + sizeof(iree_hal_device_info_t);
   iree_status_t status = iree_hal_xrt_populate_device_info(
-      device, buffer_ptr, &buffer_ptr, device_infos);
+      hipDeviceId, buffer_ptr, &buffer_ptr, device_infos);
   if (iree_status_is_ok(status)) {
     // We currenly only work with one XRT device.
     *out_device_info_count = 1;
@@ -218,9 +241,9 @@ static iree_status_t iree_hal_xrt_driver_create_device_by_id(
   iree_hal_xrt_driver_t* driver = iree_hal_xrt_driver_cast(base_driver);
   iree_string_view_t device_name = iree_make_cstring_view("xrt");
 
-  iree_status_t status =
-      iree_hal_xrt_device_create(device_name, &driver->device_params,
-                                 driver->device, host_allocator, out_device);
+  iree_status_t status = iree_hal_xrt_device_create(
+      device_name, &driver->device_params, driver->hipDeviceId, host_allocator,
+      out_device);
 
   IREE_TRACE_ZONE_END(z0);
   return status;
@@ -235,9 +258,9 @@ static iree_status_t iree_hal_xrt_driver_create_device_by_path(
   iree_hal_xrt_driver_t* driver = iree_hal_xrt_driver_cast(base_driver);
   iree_string_view_t device_name = iree_make_cstring_view("xrt");
 
-  iree_status_t status =
-      iree_hal_xrt_device_create(device_name, &driver->device_params,
-                                 driver->device, host_allocator, out_device);
+  iree_status_t status = iree_hal_xrt_device_create(
+      device_name, &driver->device_params, driver->hipDeviceId, host_allocator,
+      out_device);
 
   IREE_TRACE_ZONE_END(z0);
   return status;
